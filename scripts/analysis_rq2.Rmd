@@ -1,0 +1,759 @@
+---
+title: "analysis_rq2"
+author: "Álvaro Domingo"
+date: "2023-07-14"
+output: pdf_document
+---
+
+```{r}
+library(VGAM)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(lmtest)
+library(stringr)
+library(emmeans)
+library(aod)
+library(plm)
+library(reshape2)
+```
+
+```{r}
+all_data = subset(read.csv("../results/eatit_v1/all_data.csv"), select=-X)
+datasets = read.csv("../results/eatit_v1/datasets.csv")
+datasets$dataset[datasets$dataset=="visual_domain_decathlon/aircraft"] = "aircraft"
+all_data = left_join(all_data, datasets, by="dataset")
+high_energy = c("birdsnap", "cifar10", "cifar100", "food101", "sun397")
+N = 50
+s = 10
+
+center = function(df, attribute) {
+  return (ave(as.vector(df[,attribute]), df$dataset, FUN = function(x) x - mean(x)) + mean(df[,attribute]))
+}
+```
+
+## Data prep
+
+```{r}
+# Define global variables
+N = 50
+s = 10
+
+# Read data
+history = subset(read.csv("../results/eatit_v1/history.csv"), select=-X)
+codecarbon = subset(read.csv("../results/eatit_v1/emissions.csv"), select=-X)
+nvidia = subset(read.csv("../results/eatit_v1/monitor.csv"), select=-X)
+datasets = read.csv("../results/eatit_v1/datasets.csv")
+
+# Parse attributes
+
+colnames(codecarbon)[colnames(codecarbon) == "timestamp"] = "end"
+colnames(nvidia) = c("timestamp", "utilization_gpu", "utilization_memory", "memory_total", "memory_used", "power_draw", "temperature_gpu")
+codecarbon$start = as.POSIXct(codecarbon$start, format = "%Y-%m-%d %H:%M:%OS")
+codecarbon$end = as.POSIXct(codecarbon$end, format = "%Y-%m-%d %H:%M:%OS")
+nvidia$timestamp = as.POSIXct(nvidia$timestamp, format = "%Y-%m-%d %H:%M:%OS")
+cols = c("utilization_gpu", "utilization_memory", "memory_total", "memory_used", "power_draw")
+nvidia[cols] <- lapply(nvidia[cols], function(x) as.numeric(sapply(x, function(val) unlist(strsplit(as.character(val), " "))[2]))) # Value is after a blank space
+
+# Process accuracies
+history$accuracy = ifelse(history$accuracy == 0, 1 / datasets$num_classes[match(history$dataset, datasets$dataset)], history$accuracy)
+history$val_accuracy = ifelse(history$val_accuracy == 0, 1 / datasets$num_classes[match(history$dataset, datasets$dataset)], history$val_accuracy)
+history["logodds"] = logitlink(history$accuracy)
+history["val_logodds"] = logitlink(history$val_accuracy)
+
+hist.carbon = left_join(history, codecarbon, by=c("dataset", "mode", "intervention", "epoch"))
+hist.carbon = hist.carbon %>% mutate(dataset = recode(dataset, "visual_domain_decathlon/aircraft" = "aircraft"))
+datasets = datasets %>% mutate(dataset = recode(dataset, "visual_domain_decathlon/aircraft" = "aircraft"))
+datasets = bind_rows(datasets[11, ], datasets[-11, ])
+
+# For each row of "hist.carbon", get the subset of "nvidia" that falls within the "start" and "end" window,
+# average its attributes, and merge the result back to the original row of "hist.carbon"
+all_data <- hist.carbon %>%
+  rowwise() %>%
+  mutate(subset_nvidia = nvidia %>%
+           filter(timestamp >= start, timestamp <= end) %>%
+           subset(select=-timestamp) %>%
+           do(data.frame(t(colMeans(.))))) %>%
+  unnest(subset_nvidia) %>%
+  as.data.frame()
+
+all_data$energy_nvidia = all_data$power_draw * all_data$duration / 3600000
+
+remove(nvidia, history, codecarbon, hist.carbon)
+```
+
+```{r}
+center = function(df, attribute) {
+  return (ave(as.vector(df[,attribute]), df$dataset, FUN = function(x) x - mean(x)) + mean(df[,attribute]))
+}
+
+get_cumulative <- function(df, row, attribute) {
+  dataset <- row["dataset"]
+  mode <- row["mode"]
+  intervention <- as.numeric(row["intervention"])
+  epoch <- as.numeric(row["epoch"])
+  if (mode == "base") {
+    return(sum(df[df$dataset == dataset &
+                          df$mode == "base" & 
+                          df$epoch <= epoch, attribute]))
+  }
+  else {
+    base_energy <- sum(df[df$dataset == dataset & 
+                                   df$mode == "base" & 
+                                   df$epoch <= intervention, attribute])
+    intervention_energy <- sum(df[df$dataset == dataset & 
+                                           df$mode == mode &
+                                           df$intervention == intervention & 
+                                           df$epoch <= epoch, attribute])
+    return(base_energy + intervention_energy)
+  }
+}
+
+all_data$val_logodds_centered = center(all_data, "val_logodds")
+all_data$logodds_centered = center(all_data, "logodds")
+all_data$energy_centered = center(all_data, "energy_consumed")
+all_data$energy_nvidia_centered = center(all_data, "energy_nvidia")
+all_data$duration_centered = center(all_data, "duration")
+
+all_data$energy_centered_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="energy_centered")
+all_data$duration_centered_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="duration_centered")
+all_data$energy_nvidia_centered_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="energy_nvidia_centered")
+
+all_data$energy_nvidia_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="energy_nvidia")
+all_data$energy_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="energy_consumed")
+all_data$duration_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="duration")
+all_data$score = all_data$val_accuracy / all_data$energy_nvidia_cumulative
+```
+
+```{r}
+part_data = all_data[all_data$dataset=="cifar10",]
+part_data$score = part_data$val_accuracy / part_data$energy_nvidia_cumulative
+second_deriv = diff(diff(part_data$score))
+infl.index = which(diff(sign(second_deriv)) != 0)[1]
+```
+
+```{r}
+all_data = subset(read.csv("../results/eatit_v1/all_data.csv"), select=-X)
+datasets = read.csv("../results/eatit_v1/datasets.csv")
+datasets$dataset[datasets$dataset=="visual_domain_decathlon/aircraft"] = "aircraft"
+all_data = left_join(all_data, datasets, by="dataset")
+high_energy = c("birdsnap", "cifar10", "cifar100", "food101", "sun397")
+N = 50
+s = 10
+```
+
+
+Visualization
+```{r}
+var.plot = "accuracy"
+
+par(mfrow=c(3,4), mar=c(2.3,2.3,1,0), oma=c(0,0,0,0), mgp=c(1.3,0.5,0))
+# Loop over datasets
+for (d in datasets$dataset) {
+  history_part <- all_data[all_data$dataset == d, ]
+  
+  # Plot each subplot
+  plot(NULL, xlim=c(0,N), ylim=range(history_part[,var.plot]), xlab="Epoch", ylab="Validation F-score", main=d)
+  for (i in seq(0, N, by=s)) {
+    branch <- history_part[history_part$intervention == i & history_part$mode == "freeze", ]
+    lines(branch$epoch, branch[,var.plot], col="green", type='l')
+    branch <- history_part[history_part$intervention == i & history_part$mode == "quant", ]
+    lines(branch$epoch, branch[,var.plot], col="red", type='l')
+  }
+  branch <- history_part[history_part$mode == "base", ]
+  lines(branch$epoch, branch[,var.plot], col="blue", type='l')
+  
+  rational = function(x, c, b) {c / (x + b)}
+  y = history_part$score[1:50]
+  fit = nls(y ~ rational(seq(1,50), c, b), start = list(c = 100, b = 10))
+  lines(predict(fit, seq(1,50)), col="black")
+  abline(v = -coef(fit)[["b"]] + sqrt(coef(fit)[["c"]]))
+  print(d)
+  print(-coef(fit)[["b"]] + sqrt(coef(fit)[["c"]]))
+}
+```
+
+
+## RQ2
+
+Data prep 
+
+```{r}
+panel.base = all_data %>%
+  subset(mode=="base", select=c(dataset, epoch, accuracy, val_accuracy)) %>%
+  group_by(dataset) %>%
+  mutate(val_lag1 = dplyr::lag(val_accuracy, 1),
+         val_lag2 = dplyr::lag(val_accuracy, 2),
+         val_lag3 = dplyr::lag(val_accuracy, 3),
+         trn_lag1 = dplyr::lag(accuracy, 1),
+         trn_lag2 = dplyr::lag(accuracy, 2),
+         trn_lag3 = dplyr::lag(accuracy, 3)
+         ) %>%
+  ungroup() %>%
+  as.data.frame() %>%
+  drop_na()
+
+get_prev <- function(row, df, attribute, n) {
+  dataset <- row["dataset"]
+  mode <- row["mode"]
+  intervention <- as.numeric(row["intervention"])
+  epoch <- as.numeric(row["epoch"])
+  if (epoch <= n) {return (NA)}
+  if (epoch - n <= intervention) {
+    return (df[df$dataset == dataset & 
+                 df$mode == "base" &
+                 df$epoch == epoch - n,
+               attribute])
+  }
+  if (epoch - n > intervention) {
+    return (df[df$dataset == dataset & 
+                 df$mode == mode &
+                 df$intervention == intervention &
+                 df$epoch == epoch - n,
+               attribute])}
+}
+
+panel.data = all_data[str_split("dataset,epoch,intervention,mode,val_accuracy,accuracy", ",")[[1]]]
+for (attr in c("val_accuracy", "accuracy", "mode")) {
+  for (n in 1:10) {
+    panel.data[[paste0(attr, "_lag", n)]] <- apply(panel.data, 1, get_prev, df=panel.data, attribute=attr, n=n)
+  }
+}
+```
+
+
+Fit panel data accuracy (only base mode)
+```{r}
+ppanel.base = pdata.frame(panel.base, index=c("dataset", "epoch"))
+
+
+res.ols = lm(val_accuracy ~ val_lag1 + val_lag2 + val_lag3, data=panel.base)
+res.fe = lm(val_accuracy ~ val_lag1 + val_lag2 + val_lag3 + dataset, data=panel.base)
+res.ols2 = plm(val_accuracy ~ val_lag1 + val_lag2 + val_lag3, data = ppanel.base, model = "pooling")
+res.fe2 = plm(val_accuracy ~ val_lag1 + val_lag2 + val_lag3, data = ppanel.base, model = "within")
+res.re2 = plm(val_accuracy ~ val_lag1 + val_lag2 + val_lag3, data = ppanel.base, model = "random")
+
+print("------- SUMMARIES ---------")
+print(summary(res.ols))
+print(summary(res.ols2)$fstatistic$p.value)
+print(summary(res.fe))
+print(summary(res.fe2)$fstatistic$p.value)
+print(summary(res.re2))
+print(summary(res.re2)$fstatistic$p.value)
+print("------- OLS VS FE ---------")
+print(anova(res.ols, res.fe))
+print(anova(res.ols, res.fe)$"Pr(>F)")
+print(wald.test(vcov(res.fe), coef(res.fe), Terms=5:15))
+print(wald.test(vcov(res.fe), coef(res.fe), Terms=5:15)$result$chi2["P"])
+print("------- FE VS RE --------- ")
+print(phtest(res.fe2, res.re2))
+print(phtest(res.fe2, res.re2)$p.value)
+```
+
+
+### Check number of lagged values
+```{r}
+for (i in 1:10) {
+  part_data = panel.data[,c(1:6, 7:(6+i), 17:(16+i), 27:(26+i))] %>% drop_na()
+  form = formula(paste("val_accuracy ~ dataset +", 
+                       paste(paste0("val_accuracy_lag", 1:i), collapse="+"), "+",
+                       paste(paste0("mode_lag", 1:i), collapse="+"), "+", "mode"))
+  res.fe = lm(form, data=part_data)
+  #coefs = summary(res.fe)$coefficients[13:(i+12),]
+  coefs = summary(res.fe)$coefficients[(13+i):(3*i+14),]
+  coefs[,4] = i * coefs[,4]  # Compensate (Bonferroni?)
+  print(coefs)
+}
+```
+
+
+```{r}
+for (i in 2:10) {
+  part_data = panel.data[,c(1:6, 7:(6+i), 17:(16+i), 27:(26+i))] %>% drop_na()
+  form1 = formula(paste("val_accuracy ~ dataset +", 
+                       paste(paste0("val_accuracy_lag", 1:(i-1)), collapse="+"), "+",
+                       paste(paste0("mode_lag", 1:(i-1)), collapse="+"), "+", "mode"))
+  form2 = formula(paste("val_accuracy ~ dataset +", 
+                       paste(paste0("val_accuracy_lag", 1:i), collapse="+"), "+",
+                       paste(paste0("mode_lag", 1:i), collapse="+"), "+", "mode"))
+  res.fe1 = lm(form1, data=part_data)
+  res.fe2 = lm(form2, data=part_data)
+  print(anova(res.fe1, res.fe2))
+}
+```
+
+```{r}
+for (i in 1:4) {
+  part_data = panel.data[,c(1:6, 7:10, 17:20, 27:30)] %>% drop_na()
+  part_data[part_data == "quant"] = "base"
+  form = formula(paste("val_accuracy ~ dataset +", 
+                       paste(paste0("val_accuracy_lag", 1:4), collapse="+"), "+",
+                       paste(paste0("mode_lag", 1:i), collapse="+"), "+", "mode"))
+  res.fe = lm(form, data=part_data)
+  coefs = summary(res.fe)$coefficients[17:(i+17),]
+  #coefs = summary(res.fe)$coefficients[(13+i):(3*i+14),]
+  coefs[,4] = i*coefs[,4]
+  print(coefs)
+}
+
+for (i in 1:4) {
+  part_data = panel.data[,c(1:6, 7:10, 17:20, 27:30)] %>% drop_na()
+  part_data[part_data == "quant"] = "base"
+  form = formula(paste("val_accuracy ~ dataset +", 
+                       paste(paste0("val_accuracy_lag", 1:4), collapse="+"), "+",
+                       paste0("mode_lag", i), "+", "mode"))
+  res.fe = lm(form, data=part_data)
+  print(summary(res.fe))
+}
+```
+
+### Estimate dataset parameter
+```{r}
+get_all_previous = function(i, df) {
+  if (df[i,"intervention"] == 0) {
+    return (df[df$intervention == 0 & df$mode == df[i,"mode"] & df$epoch <= df[i,"epoch"],])
+  }
+  return(rbind(
+    df[df$intervention == 0 & df$epoch < df[i,"intervention"],],
+    df[df$intervention == df[i,"intervention"] & df$mode == df[i,"mode"] & df$epoch <= df[i,"epoch"],]
+  ))
+}
+
+n.rep = 1
+time.measure = system.time({
+  for (rep in 1:n.rep) {
+    errors.1 = c()
+    gt = c()
+    for (dataset in datasets$dataset) {
+      part_data = panel.data[panel.data$dataset != dataset, c(1:6, 7:10, 17:20, 27)] %>% drop_na()
+      part_data[part_data == "quant"] = "base"
+      extra_data = panel.data[panel.data$dataset == dataset, c(1:6, 7:10, 17:20, 27)] %>% drop_na()
+      extra_data[extra_data == "quant"] = "base"
+      for (i in 1:nrow(extra_data)) {
+        if (extra_data[i,"epoch"] <= 5) {next}
+        complete_data = rbind(part_data, get_all_previous(i, extra_data))
+        res.fe = lm(val_accuracy ~ dataset + val_accuracy_lag1 + val_accuracy_lag2 + 
+                      val_accuracy_lag3 + val_accuracy_lag4 + mode_lag1 + mode, data=complete_data)
+        pred = predict(res.fe, newdata=extra_data[i,c(1,7:10,15,4)])
+        errors.1 = c(errors.1, pred - extra_data[i,"val_accuracy"])
+        errors.rel.1 = c(errors.rel.1, abs(pred - extra_data[i,"val_accuracy"]) / extra_data[i,"val_accuracy"])
+        gt = c(gt, extra_data[i,"val_accuracy"])
+      }
+    }
+  }
+})
+print(time.measure[3]/n.rep)
+print(sum(errors.1**2))
+print(mean(errors.1**2))
+print(mean(abs(errors.1)))
+print(mean(abs(errors.1)/gt))
+```
+
+
+```{r}
+n.rep = 1
+time.measure = system.time({
+  for (rep in 1:n.rep) {
+    errors.2 = c()
+    gt = c()
+    for (dataset in datasets$dataset) {
+      part_data = panel.data[panel.data$dataset != dataset, c(1:6, 7:10, 17:20, 27)] %>% drop_na()
+      part_data[part_data == "quant"] = "base"
+      extra_data = panel.data[panel.data$dataset == dataset, c(1:6, 7:10, 17:20, 27)] %>% drop_na()
+      res.fe = lm(val_accuracy ~ dataset + val_accuracy_lag1 + val_accuracy_lag2 + 
+                      val_accuracy_lag3 + val_accuracy_lag4 + mode_lag1 + mode, data=part_data)
+      coefs = res.fe$coefficients[12:17]
+      n.count = 0
+      for (i in 1:nrow(extra_data)) {
+        if (extra_data[i,"epoch"] <= 5) {next}
+        n.count = n.count + 1
+        previous_data = get_all_previous(i, extra_data)[c(7:10,15,4,5)]
+        previous_data[5:6] = (previous_data[5:6] == "freeze")
+        previous_preds = colSums(t(previous_data[1:6]) * coefs)
+        #new_fit = lm(previous_data$val_accuracy ~ previous_preds)
+        offset = mean(previous_data$val_accuracy) - mean(previous_preds)
+        
+        pred = c(as.numeric(extra_data[i,7:10]), extra_data[i,15]=="freeze", extra_data[i,4]=="freeze")
+        #pred = sum(pred * coefs) * new_fit$coefficients[2] + new_fit$coefficients[1]
+        pred = sum(pred * coefs) + offset
+        errors.2 = c(errors.2, pred - extra_data[i,"val_accuracy"])
+        gt = c(gt, extra_data[i,"val_accuracy"])
+      }
+    }
+  }
+})
+
+print(time.measure[3]/n.rep)
+print(sum(errors.2**2))
+print(mean(errors.2**2))
+print(mean(abs(errors.2)))
+print(mean(abs(errors.2)/gt))
+```
+
+```{r}
+n.rep = 1
+time.measure = system.time({
+  for (rep in 1:n.rep) {
+    errors.3 = c()
+    gt = c()
+    epochs.count = c()
+    for (dataset in datasets$dataset) {
+      part_data = panel.data[panel.data$dataset != dataset, c(1:6, 7:10, 17:20, 27)] %>% drop_na()
+      part_data[part_data == "quant"] = "base"
+      extra_data = panel.data[panel.data$dataset == dataset, c(1:6, 7:10, 17:20, 27)] %>% drop_na()
+      res.fe = lm(val_accuracy ~ dataset + val_accuracy_lag1 + val_accuracy_lag2 + 
+                      val_accuracy_lag3 + val_accuracy_lag4 + mode_lag1 + mode, data=part_data)
+      coefs = res.fe$coefficients[12:17]
+      n.count = 0
+      for (i in 1:nrow(extra_data)) {
+        if (extra_data[i,"epoch"] <= 5) {next}
+        n.count = n.count + 1
+        previous_data = get_all_previous(i, extra_data)[c(7:10,15,4,5)]
+        previous_data[5:6] = (previous_data[5:6] == "freeze")
+        previous_preds = colSums(t(previous_data[1:6]) * coefs)
+        new_fit = lm(previous_data$val_accuracy ~ previous_preds)
+        #offset = mean(previous_data$val_accuracy) - mean(previous_preds)
+        
+        pred = c(as.numeric(extra_data[i,7:10]), extra_data[i,15]=="freeze", extra_data[i,4]=="freeze")
+        pred = sum(pred * coefs) * new_fit$coefficients[2] + new_fit$coefficients[1]
+        #pred = sum(pred * coefs) + offset
+        errors.3 = c(errors.3, pred - extra_data[i,"val_accuracy"])
+        errors.rel.3 = c(errors.rel.3, abs(pred - extra_data[i,"val_accuracy"]) / extra_data[i,"val_accuracy"])
+        epochs.count = c(epochs.count, extra_data[i,"epoch"])
+        gt = c(gt, extra_data[i,"val_accuracy"])
+      }
+    }
+  }
+})
+
+print(time.measure[3]/n.rep)
+print(sum(errors.3**2))
+print(mean(errors.3**2))
+print(mean(abs(errors.3)))
+print(mean(abs(errors.3)/gt))
+```
+
+```{r}
+plot(unique(epochs.count), tapply(errors.1, epochs.count, mean), type='l', col="blue")
+lines(unique(epochs.count), tapply(errors.2, epochs.count, mean), col="green")
+lines(unique(epochs.count), tapply(errors.3, epochs.count, mean), col="red")
+legend("topright", legend = c("Model refitting", "Additive parameter estimation", "Regressive parameter estimation"), col = c("blue", "green", "red"), lty = 1)
+```
+
+### Estimation of coefficients for reference
+
+```{r}
+part_data = panel.data[c(1:6, 7:10, 17:20, 27)] %>% drop_na()
+res.fe = lm(val_accuracy ~ dataset + val_accuracy_lag1 + val_accuracy_lag2 + 
+                val_accuracy_lag3 + val_accuracy_lag4 + mode_lag1 + mode, data=part_data)
+print(summary(res.fe))
+print(names(res.fe$coefficients[13:length(res.fe$coefficients)]))
+print(unname(res.fe$coefficients[13:length(res.fe$coefficients)]))
+```
+
+```{r}
+part_data = panel.data[c(1:6, 7:10, 17:20, 27)] %>% drop_na()
+res.fe = lm(accuracy ~ dataset + accuracy_lag1 + accuracy_lag2 + 
+                accuracy_lag3 + accuracy_lag4 + mode_lag1 + mode, data=part_data)
+print(summary(res.fe))
+print(names(res.fe$coefficients[13:length(res.fe$coefficients)]))
+print(unname(res.fe$coefficients[13:length(res.fe$coefficients)]))
+```
+
+
+
+### Energy prediction
+
+Test for autocorrelation (temporal independence)
+```{r}
+var.plot = "energy_nvidia"
+
+par(mfrow=c(3,4), mar=c(2.3,2.3,1,0), oma=c(0,0,0,0), mgp=c(1.3,0.5,0))
+# Loop over datasets
+for (d in datasets$dataset) {
+  history_part <- all_data[all_data$dataset == d, ]
+  
+  # Plot each subplot
+  plot(NULL, xlim=c(0,N), ylim=range(history_part[,var.plot]), xlab="Epoch", ylab="Validation F-score", main=d)
+  for (i in seq(0, N, by=s)) {
+    branch <- history_part[history_part$intervention == i & history_part$mode == "freeze", ]
+    lines(branch$epoch, branch[,var.plot], col="green", type='l')
+    branch <- history_part[history_part$intervention == i & history_part$mode == "quant", ]
+    lines(branch$epoch, branch[,var.plot], col="red", type='l')
+  }
+  branch <- history_part[history_part$mode == "base", ]
+  lines(branch$epoch, branch[,var.plot], col="blue", type='l')
+}
+
+par(mfrow=c(3,4), mar=c(2.3,2.3,1,0), oma=c(0,0,0,0), mgp=c(1.3,0.5,0))
+setups = list("base"=c(0,"blue"), "freeze"=c(-0.1,"green"), "quant"=c(0.1,"red"))
+# Loop over datasets
+for (d in datasets$dataset) {
+  # Plot each subplot
+  plot(NULL, xlim=c(0,10), ylim=c(-0.3,1), xlab="Lag", ylab="Autocorrelation", main=d)
+  for (m in names(setups)) {
+    history_part <- all_data[all_data$dataset == d & all_data$mode == m & all_data$intervention == 0, var.plot]
+    autocorr = acf(history_part, lag.max=10, plot=FALSE)$acf
+    lines(seq(0,10) + as.numeric(setups[[m]][1]), autocorr, col=setups[[m]][2], type="h")
+  }
+  abline(h=c(0, 1.96/sqrt(50), -1.96/sqrt(50)), col=c("black", "red", "red"))
+}
+
+
+lb_df = all_data[all_data$intervention == 0,] %>%
+  group_by(dataset, mode) %>%
+  summarise(p_value = Box.test(energy_nvidia, lag=10, type = "Ljung-Box")$p.value)
+
+# Create bar plot of p-values
+ggplot(lb_df, aes(x = dataset, y = p_value, color = mode)) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.1)) +
+  scale_color_manual(values = c("blue", "green", "red"), name = "Training mode",
+                     labels = c("Base training", "Layer freezing", "Model quantization")) +
+  labs(x = "Dataset", y = "Ljung-Box p-value") +
+  theme(axis.text.x = element_text(angle = 20, vjust = 1, hjust = 1)) +
+  geom_hline(yintercept = 0.05, color="red") +
+  theme_minimal()
+```
+
+Test for normality
+```{r}
+all_data2 <- all_data %>%
+  group_by(dataset, mode) %>%
+  mutate(mad = median(abs(energy_nvidia - median(energy_nvidia)))) %>%
+  filter(abs(energy_nvidia - median(energy_nvidia)) < 10 * mad) %>%
+  select(-mad)
+all_data2 <- all_data2 %>%
+  group_by(dataset) %>%
+  mutate(energy_nvidia_scaled = as.numeric(scale(energy_nvidia, center = min(energy_nvidia), scale = max(energy_nvidia) - min(energy_nvidia))))
+all_data2$mode <- as.factor(all_data2$mode)
+
+diffs = 
+  merge(count(all_data, dataset, mode), count(all_data2, dataset, mode), by = c("dataset", "mode"), all = TRUE) %>%
+    mutate(diff = n.x - n.y, percent = (n.x - n.y) / n.x * 100) %>%
+    select(dataset, mode, diff, percent)
+print(xtabs(cbind(diff, percent) ~ dataset + mode, data=diffs))
+
+ggplot(all_data2, aes(x=epoch, y=energy_nvidia_scaled, color=mode)) +
+  geom_point(alpha=0.5, size=1) +
+  scale_color_manual(values = c("blue", "green", "red"), name = "Training mode",
+                     labels = c("Base training", "Layer freezing", "Model quantization")) +
+  labs(x = "Epoch", y = "Scaled energy") +
+  facet_wrap(~dataset, nrow = 3, ncol = 4) +
+  theme_minimal()
+
+ggplot(all_data2, aes(x = energy_nvidia_scaled, fill = mode)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  scale_fill_manual(values = c("blue", "green", "red"), name = "Training mode",
+                     labels = c("Base training", "Layer freezing", "Model quantization")) +
+  labs(x = "Scaled energy", y = "Count") +
+  facet_wrap(~dataset, nrow = 3, ncol = 4) +
+  theme_minimal()
+
+ggplot(all_data2, aes(sample=energy_nvidia_scaled, color=mode)) +
+  geom_qq(alpha=0.3) +
+  scale_color_manual(values = c("blue", "green", "red"), name = "Training mode",
+                     labels = c("Base training", "Layer freezing", "Model quantization")) +
+  facet_wrap(~dataset, nrow = 3, ncol = 4) +
+  labs(x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_minimal()
+
+# Create plot of p-values for Shapiro.Wilk test
+sw_df = all_data2 %>%
+  group_by(dataset, mode) %>%
+  summarise(p_value = shapiro.test(energy_nvidia_scaled)$p.value)  # ad.test or ks.test??
+
+ggplot(sw_df, aes(x = dataset, y = p_value, color = mode)) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.1)) +
+  scale_color_manual(values = c("blue", "green", "red"), name = "Training mode",
+                     labels = c("Base training", "Layer freezing", "Model quantization")) +
+  labs(x = "Dataset", y = "Shapiro-Wilk p-value") +
+  geom_hline(yintercept = 0.05, color="red") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, vjust = 1, hjust = 1))
+
+# Create plot of p-values
+sw_df <- all_data %>%  # Choose data!
+  group_by(dataset, mode) %>%
+  summarise(p_value = shapiro.test(energy_nvidia)$p.value)
+
+ggplot(sw_df, aes(x = dataset, y = p_value, color = mode)) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.1)) +
+  scale_color_manual(values = c("red", "green", "blue")) +
+  labs(x = "Dataset", y = "Shapiro-Wilk p-value") +
+  theme(axis.text.x = element_text(angle = 20, vjust = 1, hjust = 1)) +
+  geom_hline(yintercept = 0.05, color="red") +
+  theme_minimal()
+```
+
+
+```{r}
+sw_df <- all_data2 %>%
+  group_by(dataset, mode) %>%
+  summarise(p_value = shapiro.test(energy_nvidia)$p.value)
+
+# Create bar plot of p-values
+ggplot(sw_df, aes(x = dataset, y = p_value, color = mode)) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.1)) +
+  scale_color_manual(values = c("red", "green", "blue")) +
+  labs(x = "Dataset", y = "Shapiro-Wilk p-value") +
+  theme(axis.text.x = element_text(angle = 20, vjust = 1, hjust = 1)) +
+  geom_hline(yintercept = 0.05, color="red")
+```
+
+### Coefs estimation for energy against mode
+```{r}
+mode_means = all_data %>% 
+  group_by(dataset, mode) %>% 
+  summarise(mean_energy = mean(energy_nvidia)) %>%  # Energy measure?
+  pivot_wider(names_from = mode, values_from = mean_energy) %>%
+  as.data.frame()
+
+ggplot(mode_means, aes(x = base, y = quant, color = "quant")) +
+  geom_point() +
+  geom_point(aes(y = freeze, color = "freeze")) +
+  geom_abline(intercept = 0, slope = 1, color = "blue", linetype = "dashed") +
+  scale_color_manual(values = c("green", "red"), name = "Training mode",
+                     labels = c("Layer freezing", "Model quantization")) +
+  labs(x = "Mean energy (base mode)", y = "Mean energy") +
+  geom_smooth(method = "lm", aes(x = base, y = quant, color = "quant"), 
+              se = FALSE, formula = y ~ x, data = mode_means, linetype = "dashed", size=0.5) +
+  geom_smooth(method = "lm", aes(x = base, y = freeze, color = "freeze"), 
+              se = FALSE, formula = y ~ x, data = mode_means, linetype = "dashed", size=0.5) +
+  theme_minimal()
+
+ggplot(mode_means, aes(x = base, y = quant, color = "quant")) +
+  geom_point() +
+  geom_point(aes(y = freeze, color = "freeze")) +
+  geom_abline(intercept = 0, slope = 1, color = "blue", linetype = "dashed") +
+  scale_color_manual(values = c("green", "red"), name = "Training mode",
+                     labels = c("Layer freezing", "Model quantization")) +
+  labs(x = "Mean energy for base mode", y = "Mean energy for other modes") +
+  geom_smooth(method = "lm", aes(x = base, y = quant, color = "quant"), 
+              se = FALSE, formula = y ~ x, data = mode_means, linetype = "dashed", size=0.5) +
+  geom_smooth(method = "lm", aes(x = base, y = freeze, color = "freeze"), 
+              se = FALSE, formula = y ~ x, data = mode_means, linetype = "dashed", size=0.5) +
+  coord_cartesian(xlim = c(0, 0.0003), ylim = c(0, 0.0003)) +
+  theme_minimal()  # .0003 nv, .001 carbon, .00015 emissions
+
+quant.lm = lm(quant~base, data=mode_means)
+print(summary(quant.lm))
+t.quant = (coef(summary(quant.lm))[2,1] - 1) / sqrt(vcov(quant.lm)[2,2])
+print(2 * pt(-abs(t.quant), df = df.residual(quant.lm)))
+
+freeze.lm = lm(freeze~base, data=mode_means)
+print(summary(freeze.lm))
+t.freeze = (coef(summary(freeze.lm))[2,1] - 1) / sqrt(vcov(freeze.lm)[2,2])
+print(2 * pt(-abs(t.freeze), df = df.residual(freeze.lm)))
+
+quant.lm = lm(quant~0+base, data=mode_means)
+print(summary(quant.lm))
+t.quant = (coef(summary(quant.lm))[1,1] - 1) / sqrt(vcov(quant.lm)[1,1])
+print(2 * pt(-abs(t.quant), df = df.residual(quant.lm)))
+
+freeze.lm = lm(freeze~0+base, data=mode_means)
+print(summary(freeze.lm))
+t.freeze = (coef(summary(freeze.lm))[1,1] - 1) / sqrt(vcov(freeze.lm)[1,1])
+print(2 * pt(-abs(t.freeze), df = df.residual(freeze.lm)))
+
+ggplot(mode_means, aes(x = base, y = quant, color = "quant")) +
+  geom_point() +
+  geom_point(aes(y = freeze, color = "freeze")) +
+  geom_abline(intercept = 0, slope = 1, color = "blue", linetype = "dashed") +
+  scale_color_manual(values = c("green", "red"), name = "Training mode",
+                     labels = c("Layer freezing", "Model quantization")) +
+  labs(x = "Mean energy (base mode)", y = "Mean energy") +
+  geom_smooth(method = "lm", aes(x = base, y = quant, color = "quant"), 
+              se = FALSE, formula = y ~ 0 + x, data = mode_means, linetype = "dashed", size=0.5) +
+  geom_smooth(method = "lm", aes(x = base, y = freeze, color = "freeze"), 
+              se = FALSE, formula = y ~ 0 + x, data = mode_means, linetype = "dashed", size=0.5) +
+  theme_minimal()
+
+ggplot(mode_means, aes(x = base, y = quant, color = "quant")) +
+  geom_point() +
+  geom_point(aes(y = freeze, color = "freeze")) +
+  geom_abline(intercept = 0, slope = 1, color = "blue", linetype = "dashed") +
+  scale_color_manual(values = c("green", "red"), name = "Training mode",
+                     labels = c("Layer freezing", "Model quantization")) +
+  labs(x = "Mean energy (base mode)", y = "Mean energy") +
+  geom_smooth(method = "lm", aes(x = base, y = quant, color = "quant"), 
+              se = FALSE, formula = y ~ 0 + x, data = mode_means, linetype = "dashed", size=0.5) +
+  geom_smooth(method = "lm", aes(x = base, y = freeze, color = "freeze"), 
+              se = FALSE, formula = y ~ 0 + x, data = mode_means, linetype = "dashed", size=0.5) +
+  coord_cartesian(xlim = c(0, 0.0003), ylim = c(0, 0.0003))   +
+  theme_minimal()# .0003 nv, .001 carbon, .00015 emissions
+```
+
+```{r}
+get_all_previous = function(i, df) {
+  if (df[i,"intervention"] == 0) {
+    return (df[df$intervention == 0 & df$mode == df[i,"mode"] & df$epoch < df[i,"epoch"],])
+  }
+  return(rbind(
+    df[df$intervention == 0 & df$epoch < df[i,"intervention"],],
+    df[df$intervention == df[i,"intervention"] & df$mode == df[i,"mode"] & df$epoch < df[i,"epoch"],]
+  ))
+}
+
+n.rep = 1
+options(dplyr.summarise.inform = FALSE)
+time.measure = system.time({
+  for (rep in 1:n.rep) {
+    errors.4 = c()
+    gt = c()
+    preds = c()
+    data_pred = data.frame(dataset="0", mode="0", epoch=0, intervention=0)
+    for (dataset in datasets$dataset) {
+      part_data = all_data[all_data$dataset != dataset,]
+      extra_data = all_data[all_data$dataset == dataset,]
+      mode_means = part_data %>% 
+        group_by(dataset, mode) %>% 
+        summarise(mean_energy = mean(energy_nvidia)) %>%  # Energy measure?
+        pivot_wider(names_from = mode, values_from = mean_energy) %>%
+        as.data.frame()
+      quant.change = lm(quant~0+base, data=mode_means)$coefficients[[1]]
+      freeze.change = lm(freeze~0+base, data=mode_means)$coefficients[[1]]
+      changes = c(quant.change, freeze.change)
+      names(changes) = c("quant", "freeze")
+      
+      n.count = 0
+      for (i in 1:nrow(extra_data)) {
+        if (extra_data[i,"epoch"] <= 5) {next}
+        n.count = n.count + 1
+        previous_data = get_all_previous(i, extra_data)
+        if (extra_data[i,"mode"] == "base") {
+          pred = mean(previous_data$energy_nvidia)
+        }
+        else if (extra_data[i,"mode"] != previous_data[nrow(previous_data),"mode"]) {
+          pred = mean(previous_data$energy_nvidia) * changes[extra_data[i,"mode"]]
+        }
+        else {
+          pred = mean(previous_data$energy_nvidia[previous_data$mode == extra_data[i,"mode"]])
+        }
+        #preds = c(preds, pred)
+        errors.4 = c(errors.4, pred - extra_data[i,"energy_nvidia"])
+        #data_pred = rbind(data_pred, extra_data[i,c("dataset", "mode", "epoch", "intervention")])
+        gt = c(gt, extra_data[i,"energy_nvidia"])
+      }
+    }
+  }
+})
+#data_pred = data_pred[2:nrow(data_pred),]
+#data_pred["error"] = errors.4
+
+print(time.measure[3]/n.rep)
+print(sum(errors.4**2))
+print(mean(errors.4**2))
+print(mean(abs(errors.4)))
+print(mean(abs(errors.4)/gt))
+```
+
+```{r}
+err = matrix((errors.4)/gt, ncol=12)
+err2 = rowMeans(err)
+plot(err2)
+abline(h=0)
+abline(v=95)
+abline(v=185)
+abline(v=255)
+```
+

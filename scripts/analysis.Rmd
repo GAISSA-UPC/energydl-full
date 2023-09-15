@@ -1,0 +1,376 @@
+---
+title: "TFG Analysis"
+author: "Álvaro Domingo"
+date: "2023-02-09"
+output: pdf_document
+---
+```{r}
+library(VGAM)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(lmtest)
+library(stringr)
+library(emmeans)
+library(aod)
+library(plm)
+library(reshape2)
+library(Kendall)
+```
+
+
+```{r}
+# Define global variables
+N = 50
+s = 10
+
+# Read data
+history = subset(read.csv("../results/eatit_v1/history.csv"), select=-X)
+codecarbon = subset(read.csv("../results/eatit_v1/emissions.csv"), select=-X)
+nvidia = subset(read.csv("../results/eatit_v1/monitor.csv"), select=-X)
+datasets = read.csv("../results/eatit_v1/datasets.csv")
+
+# Parse attributes
+
+colnames(codecarbon)[colnames(codecarbon) == "timestamp"] = "end"
+colnames(nvidia) = c("timestamp", "utilization_gpu", "utilization_memory", "memory_total", "memory_used", "power_draw", "temperature_gpu")
+codecarbon$start = as.POSIXct(codecarbon$start, format = "%Y-%m-%d %H:%M:%OS")
+codecarbon$end = as.POSIXct(codecarbon$end, format = "%Y-%m-%d %H:%M:%OS")
+nvidia$timestamp = as.POSIXct(nvidia$timestamp, format = "%Y-%m-%d %H:%M:%OS")
+cols = c("utilization_gpu", "utilization_memory", "memory_total", "memory_used", "power_draw")
+nvidia[cols] <- lapply(nvidia[cols], function(x) as.numeric(sapply(x, function(val) unlist(strsplit(as.character(val), " "))[2]))) # Value is after a blank space
+
+# Process accuracies
+history$accuracy = ifelse(history$accuracy == 0, 1 / datasets$num_classes[match(history$dataset, datasets$dataset)], history$accuracy)
+history$val_accuracy = ifelse(history$val_accuracy == 0, 1 / datasets$num_classes[match(history$dataset, datasets$dataset)], history$val_accuracy)
+history["logodds"] = logitlink(history$accuracy)
+history["val_logodds"] = logitlink(history$val_accuracy)
+
+hist.carbon = left_join(history, codecarbon, by=c("dataset", "mode", "intervention", "epoch"))
+hist.carbon = hist.carbon %>% mutate(dataset = recode(dataset, "visual_domain_decathlon/aircraft" = "aircraft"))
+datasets = datasets %>% mutate(dataset = recode(dataset, "visual_domain_decathlon/aircraft" = "aircraft"))
+datasets = bind_rows(datasets[11, ], datasets[-11, ])
+
+# For each row of "hist.carbon", get the subset of "nvidia" that falls within the "start" and "end" window,
+# average its attributes, and merge the result back to the original row of "hist.carbon"
+all_data <- hist.carbon %>%
+  rowwise() %>%
+  mutate(subset_nvidia = nvidia %>%
+           filter(timestamp >= start, timestamp <= end) %>%
+           subset(select=-timestamp) %>%
+           do(data.frame(t(colMeans(.))))) %>%
+  unnest(subset_nvidia) %>%
+  as.data.frame()
+
+all_data$energy_nvidia = all_data$power_draw * all_data$duration / 3600000
+
+remove(nvidia, history, codecarbon, hist.carbon)
+```
+
+```{r}
+center = function(df, attribute) {
+  return (ave(as.vector(df[,attribute]), df$dataset, FUN = function(x) x - mean(x)) + mean(df[,attribute]))
+}
+
+get_cumulative <- function(df, row, attribute) {
+  dataset <- row["dataset"]
+  mode <- row["mode"]
+  intervention <- as.numeric(row["intervention"])
+  epoch <- as.numeric(row["epoch"])
+  if (mode == "base") {
+    return(sum(df[df$dataset == dataset &
+                          df$mode == "base" & 
+                          df$epoch <= epoch, attribute]))
+  }
+  else {
+    base_energy <- sum(df[df$dataset == dataset & 
+                                   df$mode == "base" & 
+                                   df$epoch <= intervention, attribute])
+    intervention_energy <- sum(df[df$dataset == dataset & 
+                                           df$mode == mode &
+                                           df$intervention == intervention & 
+                                           df$epoch <= epoch, attribute])
+    return(base_energy + intervention_energy)
+  }
+}
+
+all_data$val_logodds_centered = center(all_data, "val_logodds")
+all_data$logodds_centered = center(all_data, "logodds")
+all_data$energy_centered = center(all_data, "energy_consumed")
+all_data$energy_nvidia_centered = center(all_data, "energy_nvidia")
+all_data$duration_centered = center(all_data, "duration")
+
+all_data$energy_centered_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="energy_centered")
+all_data$duration_centered_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="duration_centered")
+all_data$energy_nvidia_centered_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="energy_nvidia_centered")
+
+all_data$energy_nvidia_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="energy_nvidia")
+all_data$energy_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="energy_consumed")
+all_data$duration_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="duration")
+all_data$score = all_data$val_accuracy / all_data$energy_nvidia_cumulative
+```
+
+```{r}
+part_data = all_data[all_data$dataset=="cifar10",]
+part_data$score = part_data$val_accuracy / part_data$energy_nvidia_cumulative
+second_deriv = diff(diff(part_data$score))
+infl.index = which(diff(sign(second_deriv)) != 0)[1]
+```
+
+```{r}
+all_data = subset(read.csv("../results/eatit_v1/all_data.csv"), select=-X)
+datasets = read.csv("../results/eatit_v1/datasets.csv")
+datasets$dataset[datasets$dataset=="visual_domain_decathlon/aircraft"] = "aircraft"
+all_data = left_join(all_data, datasets, by="dataset")
+high_energy = c("birdsnap", "cifar10", "cifar100", "food101", "sun397")
+N = 50
+s = 10
+
+center = function(df, attribute) {
+  return (ave(as.vector(df[,attribute]), df$dataset, FUN = function(x) x - mean(x)) + mean(df[,attribute]))
+}
+```
+
+Visualize
+```{r}
+var.plot = "accuracy"
+
+par(mfrow=c(3,4), mar=c(2.3,2.3,1,0), oma=c(0,0,0,0), mgp=c(1.3,0.5,0))
+# Loop over datasets
+for (d in datasets$dataset) {
+  history_part <- all_data[all_data$dataset == d, ]
+  
+  # Plot each subplot
+  plot(NULL, xlim=c(0,N), ylim=range(history_part[,var.plot]), xlab="Epoch", ylab="Validation F-score", main=d)
+  for (i in seq(0, N, by=s)) {
+    branch <- history_part[history_part$intervention == i & history_part$mode == "freeze", ]
+    lines(branch$epoch, branch[,var.plot], col="green", type='l')
+    branch <- history_part[history_part$intervention == i & history_part$mode == "quant", ]
+    lines(branch$epoch, branch[,var.plot], col="red", type='l')
+  }
+  branch <- history_part[history_part$mode == "base", ]
+  lines(branch$epoch, branch[,var.plot], col="blue", type='l')
+  
+  rational = function(x, c, b) {c / (x + b)}
+  y = history_part$score[1:50]
+  fit = nls(y ~ rational(seq(1,50), c, b), start = list(c = 100, b = 10))
+  lines(predict(fit, seq(1,50)), col="black")
+  abline(v = -coef(fit)[["b"]] + sqrt(coef(fit)[["c"]]))
+  print(d)
+  print(-coef(fit)[["b"]] + sqrt(coef(fit)[["c"]]))
+}
+```
+
+## RQ1
+
+### Test modes against epoch of intervention
+
+```{r}
+history.test = all_data[all_data$epoch == 50,]
+#history.test = all_data[all_data$epoch %in% c(10, 20, 30, 40, 50),]
+history.test["val_logodds_centered"] = center(history.test, "val_logodds")
+history.test["logodds_centered"] = center(history.test, "logodds")
+# These ones shouldn't be used, just for testing
+history.test["energy_cumulative_centered"] = center(history.test, "energy_cumulative")
+history.test["energy_nvidia_cumulative_centered"] = center(history.test, "energy_nvidia_cumulative")
+history.test["duration_cumulative_centered"] = center(history.test, "duration_cumulative")
+
+plot(history.test$intervention, history.test$energy_nvidia_centered_cumulative, col=factor(history.test$mode))
+```
+
+```{r}
+var.plot = "val_logodds_centered"
+
+ggplot(history.test, aes(x=factor(intervention), y=!!sym(var.plot), fill=mode)) +
+  geom_boxplot() +
+  geom_violin(scale="width", width=0.75, alpha=0.5, trim=FALSE) + 
+  scale_fill_manual(values=c("blue", "green", "red"), name="Training mode", labels=c("Base training", "Layer freezing", "Model quantization")) +
+  xlab("Epoch of intervention") +
+  ylab("Centered validation log odds") +
+  theme_minimal()
+
+base_data <- history.test %>% filter(intervention == 0, mode == "base")
+
+pvals <- data.frame()
+for (i in 1:5) {
+  inter = (i-1) * 10
+  current_data <- history.test %>%
+    filter(intervention == inter, mode != "base")
+  full_data = rbind(current_data, base_data)
+  res.kruskal = kruskal.test(as.formula(paste(var.plot, "~ mode")), data=full_data)
+  res.wilcox = pairwise.wilcox.test(full_data[,var.plot], full_data[,"mode"], "none")
+  # Save p-values excluding freeze-freeze comparison
+  pvals = rbind(pvals, c(inter, res.kruskal$p.value, as.vector(res.wilcox$p.value)[1:2]))
+}
+colnames(pvals) = c("intervention", "3-way Kruskal", "Wilcoxon base vs. freezing", "Wilcoxon base vs. quantization")
+pval_df = pivot_longer(pvals, cols = c(2:4), names_to = "Test", values_to = "pval")
+
+ggplot(pval_df, aes(x = intervention, y = pval, color = Test)) +
+  geom_point() + geom_line(size=0.25) +
+  scale_color_manual(values = c("3-way Kruskal" = "blue", "Wilcoxon base vs. freezing" = "green", "Wilcoxon base vs. quantization" = "red")) +
+  geom_hline(yintercept = 0.05, color = "red") +
+  xlab("Epoch of intervention") +
+  ylab("P-value for accuracy tests") +
+  theme_minimal()
+```
+
+
+```{r}
+var.plot = "energy_nvidia_centered_cumulative"
+
+ggplot(history.test, aes(x=factor(intervention), y=!!sym(var.plot), fill=mode)) +
+  geom_boxplot() +
+  geom_violin(scale="width", width=0.75, alpha=0.5, trim=FALSE) + 
+  scale_fill_manual(values=c("blue", "green", "red"), name="Training mode", labels=c("Base training", "Layer freezing", "Model quantization")) +
+  xlab("Epoch of intervention") +
+  ylab("Centered energy consumed (kW h)") +
+  theme_minimal()
+
+base_data <- history.test %>% filter(intervention == 0, mode == "base")
+
+pvals <- data.frame()
+for (i in 1:5) {
+  inter = (i-1) * 10
+  current_data <- history.test %>%
+    filter(intervention == inter, mode != "base")
+  full_data = rbind(current_data, base_data)
+  res.kruskal = kruskal.test(as.formula(paste(var.plot, "~ mode")), data=full_data)
+  res.wilcox = pairwise.wilcox.test(full_data[,var.plot], full_data[,"mode"], "none")
+  # Save p-values excluding freeze-freeze comparison
+  pvals = rbind(pvals, c(inter, res.kruskal$p.value, as.vector(res.wilcox$p.value)[1:2]))
+}
+colnames(pvals) = c("intervention", "3-way Kruskal", "Wilcoxon base vs. freezing", "Wilcoxon base vs. quantization")
+pval_df = pivot_longer(pvals, cols = c(2:4), names_to = "Test", values_to = "pval")
+
+# Fit exponential function to energy tests
+exp_func = function(x, a, b) {a * exp(b * x)}
+fit = nls(`Wilcoxon base vs. freezing` ~ exp_func(intervention, a, b), data = pvals[c(1,3)], start = list(a = 1, b = 0.1))
+a = coef(fit)[1]
+b = coef(fit)[2]
+
+ggplot(pval_df, aes(x = intervention, y = pval, color = Test)) +
+  geom_point() + geom_line(size=0.25) +
+  scale_color_manual(values = c("3-way Kruskal" = "blue", "Wilcoxon base vs. freezing" = "green", "Wilcoxon base vs. quantization" = "red")) +
+  geom_hline(yintercept = 0.05, color = "red") +
+  xlab("Epoch of intervention") +
+  ylab("P-value for energy tests") +
+  theme_minimal() +
+  stat_function(fun = function(x) exp_func(x, a, b), color = "green", size=0.25, linetype='dashed')
+
+print(log(0.05/a) / b)
+```
+
+
+
+### Test metrics against epoch of stopping
+
+```{r}
+history.test = all_data
+#history.test = all_data[all_data$epoch %in% c(10, 20, 30, 40, 50),]
+history.test["val_logodds_centered"] = center(history.test, "val_logodds")
+history.test["logodds_centered"] = center(history.test, "logodds")
+# These ones shouldn't be used, just for testing
+history.test["energy_cumulative_centered"] = center(history.test, "energy_cumulative")
+history.test["energy_nvidia_cumulative_centered"] = center(history.test, "energy_nvidia_cumulative")
+history.test["duration_cumulative_centered"] = center(history.test, "duration_cumulative")
+```
+
+
+```{r}
+var.plot = "val_logodds_centered"
+ggplot(history.test, aes(x=factor(epoch), y=!!sym(var.plot))) +
+  geom_boxplot(fill="blue") +
+  #geom_violin(scale="width", width=0.75, alpha=0.5, trim=FALSE, fill="blue") +
+  xlab("Epoch of stopping") +
+  ylab("Validation centered log odds") +
+  theme_minimal()
+
+cor.test(history.test$epoch, history.test[,var.plot], method="kendall")
+
+pvals = c()
+taus = c()
+for (i in 1:49) {
+  history.part = history.test[history.test$epoch >= i,]
+  res.cor = cor.test(history.part$epoch, history.part[,var.plot], method="kendall")
+  pvals = c(pvals, res.cor$p.value)
+  taus = c(taus, res.cor$estimate)
+}
+df <- length(history.part$epoch) - 2
+critical_t <- qt(1 - 0.05 / 2, df)
+#critical_tau <- Kendall_to_t(critical_t, length(history.part$epoch))
+
+ggplot(mapping = aes(x=1:49, y=pvals)) +
+  geom_point() +
+  geom_line() +
+  geom_hline(yintercept = 0.05, color = "red") +
+  xlab("First epoch considered in the test") +
+  ylab("P-value of the correlation") +
+  theme_minimal()
+
+
+ggplot(mapping = aes(x=1:49, y=taus)) +
+  geom_point() +
+  geom_line() +
+  #geom_hline(yintercept = 0.05, color = "red") +
+  xlab("First epoch considered in the test") +
+  ylab("Kendall's correlation coefficient") +
+  theme_minimal()
+```
+
+```{r}
+var.plot = "energy_nvidia_centered_cumulative"
+ggplot(history.test, aes(x=factor(epoch), y=!!sym(var.plot))) +
+  geom_boxplot(fill="blue") +
+  #geom_violin(scale="width", width=0.75, alpha=0.5, trim=FALSE, fill="blue") +
+  xlab("Epoch of stopping") +
+  ylab("Cumulative centered energy consumed (kW h)") +
+  theme_minimal()
+
+cor.test(history.test$epoch, history.test[,var.plot], method="kendall")
+
+pvals = c()
+taus = c()
+for (i in 1:49) {
+  history.part = history.test[history.test$epoch >= i,]
+  res.cor = cor.test(history.part$epoch, history.part[,var.plot], method="kendall")
+  pvals = c(pvals, res.cor$p.value)
+  taus = c(taus, res.cor$estimate)
+}
+ggplot(mapping = aes(x=1:49, y=pvals)) +
+  geom_point() +
+  geom_line() +
+  geom_hline(yintercept = 0.05, color = "red") +
+  xlab("First epoch considered in the test") +
+  ylab("P-value of the correlation") +
+  theme_minimal()
+
+
+ggplot(mapping = aes(x=1:49, y=taus)) +
+  geom_point() +
+  geom_line() +
+  #geom_hline(yintercept = 0.05, color = "red") +
+  xlab("First epoch considered in the test") +
+  ylab("Kendall's correlation coefficient") +
+  theme_minimal()
+```
+
+```{r}
+res = aov(val_logodds_centered ~ mode * intervention, data=history.test)
+#print(summary(res))
+print(emmeans(res, ~ mode * intervention, type="response"))
+```
+
+
+
+```{r}
+ggplot(history.test[history.test$intervention==0,], aes(x=mode, y=energy_nvidia_centered, fill=mode)) +
+  geom_boxplot() +
+  geom_violin(scale="width", width=0.75, alpha=0.5, trim=FALSE) +
+  xlab("Training mode") +
+  ylab("Centered energy consumed (kW h)") +
+  theme_classic()
+
+summary(aov(energy_nvidia_centered_cumulative ~ mode, data = history.test[history.test$intervention==0,]))
+```
+
+
