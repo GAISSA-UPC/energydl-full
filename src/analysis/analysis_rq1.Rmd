@@ -21,7 +21,7 @@ library(Kendall)
 ## Read data
 
 ```{r}
-all_data = subset(read.csv("../../data/raw/all_data.csv"), select=-X)
+all_data = subset(read.csv("../../data/processed/all_data.csv"), select=-X)
 datasets = read.csv("../../data/raw/datasets.csv")
 datasets$dataset[datasets$dataset=="visual_domain_decathlon/aircraft"] = "aircraft"
 all_data = left_join(all_data, datasets, by="dataset")
