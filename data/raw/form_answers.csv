@@ -1,0 +1,29 @@
+Marca de temps,Which is your current role?,"On a scale from 1 to 5, when 1 is none and 5 is a lot, how much knowledge / experience do you have in the next fields? [Machine Learning / Deep Learning in general.]","On a scale from 1 to 5, when 1 is none and 5 is a lot, how much knowledge / experience do you have in the next fields? [The environmental impact of Deep Learning models.]","On a scale from 1 to 5, when 1 is none and 5 is a lot, how much knowledge / experience do you have in the next fields? [Assessing and monitoring the energy consumption or carbon emissions of training or executing Deep Learning models.]","On a scale from 1 to 5, when 1 is none and 5 is a lot, how much knowledge / experience do you have in the next fields? [Minimizing the energy consumed or the carbon emitted by training or executing Deep Learning models.]",What software do you usually use to develop Deep Learning models:,"On a scale from 1 to 5, where 1 is completely disagree and 5 is completely agree, how much do you agree with the next statements? [This tool would be useful to assess and monitor the energy consumed and the carbon emissions of Deep Learning training.]","On a scale from 1 to 5, where 1 is completely disagree and 5 is completely agree, how much do you agree with the next statements? [This tool would be effective to reduce the energy consumed by Deep Learning training.]","On a scale from 1 to 5, where 1 is completely disagree and 5 is completely agree, how much do you agree with the next statements? [It looks easy for me to use and manipulate this tool]","On a scale from 1 to 5, where 1 is completely disagree and 5 is completely agree, how much do you agree with the next statements? [It would take me no time to learn to use this tool to its maximum capability.]","On a scale from 1 to 5, where 1 is completely disagree and 5 is completely agree, how much do you agree with the next statements? [I would like to use the tool in my projects in the near future.]",Is there any functionalities or changes that you would add? ,Is there anything more that you want to comment?,"If you want to recieve the results of this form or of the study realized for the development of this tool, leave your mail below."
+15/09/2023 20:21:09,Software engineer,3,3,3,2,TensorFlow,5,2,4,3,5,,,
+15/09/2023 23:25:12,ML researcher,3,4,3,3,PyTorch,5,5,4,3,5,Maybe a graph with the predictions of energy and accuracy,,
+16/09/2023 11:12:58,Software engineer,2,3,3,3,I do not develop DL models,4,3,2,2,4,,"The video could show more clearly the advantages. Maybe instead of these sentences at the beginning, a kind of graphical summary of the main concepts before the demo",
+17/09/2023 11:31:46,Software engineer,3,2,1,1,PyTorch,5,5,4,3,4,,,
+17/09/2023 17:08:31,Data scientist / analyst,3,5,2,1,PyTorch,4,3,2,3,2,,,
+17/09/2023 17:12:06,Data scientist / analyst,4,3,2,2,PyTorch,4,4,2,2,3,,,
+17/09/2023 17:50:31,ML researcher,5,3,2,2,PyTorch,5,4,4,2,3,"If pytorch framework is not supported, I think it would be very beneficial for the utility of the project to add it.",,
+17/09/2023 18:14:44,ML researcher,4,4,4,3,PyTorch,4,5,4,3,4,I would add further explanation on what 'quant' and 'freeze' modes actually do (maybe with a 'help' command?) as it may be confusing at first glance,,
+17/09/2023 19:30:49,PhD student in SE for green AI,4,5,5,4,TensorFlow,5,5,5,5,5,,,
+17/09/2023 19:39:55,Business Continuity Director,3,3,2,2,TensorFlow,4,4,5,4,3,,,
+17/09/2023 21:34:47,Data scientist / analyst,5,4,1,1,TensorFlow,5,5,5,5,5,,,
+18/09/2023 17:37:24,ML researcher,1,2,2,2,"No n'utilitzo cap, només he llegit articles sobre el tema",Not sure,Not sure,Not sure,Not sure,Not sure,No tinc prous coneixements per valorar aquesta eina,No tinc prous coneixements per valorar aquesta eina,
+18/09/2023 21:12:27,Data scientist / analyst,4,4,2,2,PyTorch,3,4,3,3,3,"Explain a bit more what each functionality can do, perhaps by creating a documentation.
+The different modes could be part of the parameters of the function.
+Would be nice to have some visuals too :)
+Really good work though! 🙌🏻",,jacisuni@gmail.com
+19/09/2023 12:22:18,ML researcher,3,4,3,3,PyTorch,5,5,5,5,5,,,
+20/09/2023 17:46:23,Data scientist / analyst,3,3,1,2,TensorFlow,4,2,5,3,5,,Great job ;),
+26/09/2023 13:51:25,Data scientist / analyst,5,3,2,2,PyTorch,5,Not sure,5,3,Not sure,,,
+27/09/2023 10:12:45,ML researcher,5,3,3,4,PyTorch,4,4,2,4,2,Something very useful would be automatically determining which layers to freeze (and when to freeze them) when fine-tuning models.,"It is very difficult to evaluate the potential usefulness of this tool on the basis of this video, which is difficult to follow because of the limited resolution. ",
+28/09/2023 11:54:38,ML researcher,4,4,2,1,TensorFlow,4,2,5,4,3,Non saprei,No,
+28/09/2023 18:43:13,ML researcher,4,3,3,3,PyTorch,5,5,4,4,4,,,
+30/09/2023 10:21:00,ML researcher,4,3,2,2,PyTorch,4,3,4,3,5,Support for PyTorch,,
+30/09/2023 19:43:19,Data scientist / analyst,5,1,1,1,Both,5,Not sure,Not sure,5,1,Looks good!,Sustainability is not a priority in my company but it should,
+01/10/2023 15:23:19,Data scientist / analyst,4,2,1,2,TensorFlow,5,5,5,5,5,,,
+02/10/2023 11:03:36,Software engineer,4,1,1,1,TensorFlow,5,5,5,5,5,,,
+02/10/2023 21:14:19,Data scientist / analyst,4,2,2,2,PyTorch,5,5,3,4,3,,,
+08/10/2023 16:12:20,Software engineer,1,2,4,2,TensorFlow,5,4,5,5,5,,,

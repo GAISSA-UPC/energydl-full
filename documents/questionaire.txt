@@ -1,0 +1,34 @@
+How many years of experience have you got in developing DL models?
+
+Do you know the environmental implications of training DL models?
+- No, not at all.
+- I know something about it.
+- I know quite well the implications.
+
+When training DL models, do you ever assess the energy consumed or the carbon emissions produced by the training?
+- No, never.
+- I have done it a few times but not frequently.
+- Yes, I frequently do it.
+
+Apart from assessing it, do you ever try to minimize it?
+- No, never.
+- I have done it a few times but not frequently.
+- Yes, I frequently do it.
+
+What software do you usually use to develop DL models:
+- TensorFlow/Keras
+- PyTorch
+- Other (Please specify)
+
+Now you will see a short video about a tool used with TensorFlow to help minimize the environmental impact of training a DL model by interactively changing the mode the training does.
+
+In a scale from 1 to 5, how useful do you think this tool is to assess and monitor the energy consumed and the carbon emissions of DL training?
+
+In a scale from 1 to 5, how effective do you think this tool would be to reduce the energy consumed by DL training?
+
+In a scale from 1 to 5, how easy does it look for you to use this tool?
+
+How much do you think you would need to learn to use this tool and include it on your projects?
+- With this video I think I could already include it and use it.
+- I think I would need a few tries to get familiar with its implementation and use.
+- I think I would need more than that to get to include it on my projects.
