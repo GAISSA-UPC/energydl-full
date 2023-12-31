@@ -1,0 +1,13 @@
+dataset,num_classes,train_size,test_size,from_tensorflow
+birdsnap,500,37354,2500,0
+caltech101,102,3059,6085,1
+cars196,196,8144,8041,1
+cifar10,10,50000,10000,1
+cifar100,100,50000,10000,1
+dtd,47,1880,1880,1
+food101,101,75750,25250,1
+oxford_flowers102,102,1020,6149,1
+oxford_iiit_pet,37,3680,3669,1
+sun397,397,76127,21750,1
+visual_domain_decathlon/aircraft,100,3334,3333,1
+voc,20,2501,4952,1
