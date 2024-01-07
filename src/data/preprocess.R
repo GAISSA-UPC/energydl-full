@@ -1,41 +1,15 @@
----
-title: "analysis_preprocess"
-author: "Álvaro Domingo"
-date: "2023-08-19"
-output: html_document
----
-
-```{r}
-library(VGAM)
-library(ggplot2)
-library(dplyr)
-library(tidyr)
-library(lmtest)
-library(stringr)
-library(emmeans)
-library(aod)
-library(plm)
-library(reshape2)
-library(corrplot)
-```
-
-## Read data
-
-```{r}
 # Define global variables
 N = 50
 s = 10
+
 
 # Read data
 history = subset(read.csv("../../data/raw/history.csv"), select=-X)
 codecarbon = subset(read.csv("../../data/raw/emissions.csv"), select=-X)
 nvidia = subset(read.csv("../../data/raw/monitor.csv"), select=-X)
 datasets = read.csv("../../data/raw/datasets.csv")
-```
 
-## Process attributes and merge
 
-```{r}
 # Parse attributes
 colnames(codecarbon)[colnames(codecarbon) == "timestamp"] = "end"
 codecarbon$start = as.POSIXct(codecarbon$start, format = "%Y-%m-%d %H:%M:%OS")
@@ -44,20 +18,31 @@ codecarbon$end = as.POSIXct(codecarbon$end, format = "%Y-%m-%d %H:%M:%OS")
 colnames(nvidia) = c("timestamp", "utilization_gpu", "utilization_memory", "memory_total", "memory_used", "power_draw", "temperature_gpu")
 nvidia$timestamp = as.POSIXct(nvidia$timestamp, format = "%Y-%m-%d %H:%M:%OS")
 cols = c("utilization_gpu", "utilization_memory", "memory_total", "memory_used", "power_draw")
-nvidia[cols] <- lapply(nvidia[cols], function(x) as.numeric(sapply(x, function(val) unlist(strsplit(as.character(val), " "))[2]))) # Value is after a blank space
+nvidia[cols] = lapply(
+  nvidia[cols], 
+  function(x) as.numeric(sapply(
+    x, function(val) (val %>% as.character() %>% strsplit(" ") %>% unlist())[2])
+  )
+)
+
 
 # Process accuracies
-history$accuracy = ifelse(history$accuracy == 0, 1 / datasets$num_classes[match(history$dataset, datasets$dataset)], history$accuracy)
-history$val_accuracy = ifelse(history$val_accuracy == 0, 1 / datasets$num_classes[match(history$dataset, datasets$dataset)], history$val_accuracy)
+history$accuracy = ifelse(history$accuracy == 0, 
+                          1 / datasets$num_classes[match(history$dataset, datasets$dataset)],
+                          history$accuracy)
+history$val_accuracy = ifelse(history$val_accuracy == 0, 
+                              1 / datasets$num_classes[match(history$dataset, datasets$dataset)], 
+                              history$val_accuracy)
 history["logodds"] = logitlink(history$accuracy)
 history["val_logodds"] = logitlink(history$val_accuracy)
 
+
+# Merge all sources
 hist.carbon = left_join(history, codecarbon, by=c("dataset", "mode", "intervention", "epoch"))
 hist.carbon = hist.carbon %>% mutate(dataset = recode(dataset, "visual_domain_decathlon/aircraft" = "aircraft"))
 datasets = datasets %>% mutate(dataset = recode(dataset, "visual_domain_decathlon/aircraft" = "aircraft"))
 datasets = bind_rows(datasets[11, ], datasets[-11, ])
 
-# Final merge
 all_data = hist.carbon %>%
   rowwise() %>%
   mutate(subset_nvidia = nvidia %>%
@@ -66,15 +51,12 @@ all_data = hist.carbon %>%
            do(data.frame(t(colMeans(.))))) %>%
   unnest(subset_nvidia) %>%
   as.data.frame()
-
 all_data$energy_nvidia = all_data$power_draw * all_data$duration / 3600000
 
 remove(nvidia, history, codecarbon, hist.carbon)
-```
+
 
 ## Add cumulative variables
-
-```{r}
 center = function(df, attribute) {
   return (ave(as.vector(df[,attribute]), df$dataset, FUN = function(x) x - mean(x)) + mean(df[,attribute]))
 }
@@ -86,17 +68,17 @@ get_cumulative <- function(df, row, attribute) {
   epoch <- as.numeric(row["epoch"])
   if (mode == "base") {
     return(sum(df[df$dataset == dataset &
-                          df$mode == "base" & 
-                          df$epoch <= epoch, attribute]))
+                    df$mode == "base" & 
+                    df$epoch <= epoch, attribute]))
   }
   else {
     base_energy <- sum(df[df$dataset == dataset & 
-                                   df$mode == "base" & 
-                                   df$epoch <= intervention, attribute])
+                            df$mode == "base" & 
+                            df$epoch <= intervention, attribute])
     intervention_energy <- sum(df[df$dataset == dataset & 
-                                           df$mode == mode &
-                                           df$intervention == intervention & 
-                                           df$epoch <= epoch, attribute])
+                                    df$mode == mode &
+                                    df$intervention == intervention & 
+                                    df$epoch <= epoch, attribute])
     return(base_energy + intervention_energy)
   }
 }
@@ -115,11 +97,9 @@ all_data$energy_nvidia_cumulative <- apply(all_data, 1, get_cumulative, df=all_d
 all_data$energy_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="energy_consumed")
 all_data$duration_cumulative <- apply(all_data, 1, get_cumulative, df=all_data, attribute="duration")
 all_data$score = all_data$val_accuracy / all_data$energy_nvidia_cumulative
-```
+
 
 ## Add scaled variables
-
-```{r}
 scale_df = function(df, attribute) {
   return (ave(as.vector(df[,attribute]), df$dataset, FUN = function(x) (x - mean(x)) / sd(x)) + mean(df[,attribute]))
 }
@@ -145,55 +125,7 @@ all_data$energy_nvidia_scaled2 = scale_df2(all_data, "energy_nvidia")
 all_data$duration_scaled2 = scale_df2(all_data, "duration")
 all_data$temperature_gpu_scaled2 = scale_df2(all_data, "temperature_gpu")
 all_data$utilization_gpu_scaled2 = scale_df2(all_data, "utilization_gpu")
-```
+
 
 ## Write processed data
-
-```{r}
 write.csv(all_data, "../../data/processed/all_data.csv")
-```
-
-### Visualize
-
-```{r}
-# Read to skip data prep
-all_data = subset(read.csv("../../data/raw/all_data.csv"), select=-X)
-datasets = read.csv("../../data/raw/datasets.csv")
-datasets$dataset[datasets$dataset=="visual_domain_decathlon/aircraft"] = "aircraft"
-all_data = left_join(all_data, datasets, by="dataset")
-high_energy = c("birdsnap", "cifar10", "cifar100", "food101", "sun397")
-N = 50
-s = 10
-```
-
-```{r}
-var.plot = "temperature_gpu"
-par(mfrow=c(3,4), mar=c(1.3,1.7,1,0), oma=c(0,0,2,0), mgp=c(1.3,0.5,0), cex.main=1.4, cex.axis=1.1)
-
-# Loop over datasets
-for (d in datasets$dataset) {
-  history_part <- all_data[all_data$dataset == d, ]
-  
-  # Plot each subplot
-  plot(NULL, xlim=c(0,N), ylim=range(history_part[,var.plot]), xlab="", ylab="", main=d)
-  for (i in seq(0, N, by=s)) {
-    branch <- history_part[history_part$intervention == i & history_part$mode == "freeze", ]
-    lines(branch$epoch, branch[,var.plot], col="green", type='l')
-    branch <- history_part[history_part$intervention == i & history_part$mode == "quant", ]
-    lines(branch$epoch, branch[,var.plot], col="red", type='l')
-  }
-  branch <- history_part[history_part$mode == "base", ]
-  lines(branch$epoch, branch[,var.plot], col="blue", type='l')
-  
-  #rational = function(x, c, b) {c / (x + b)}
-  #y = history_part$score[1:50]
-  #fit = nls(y ~ rational(seq(1,50), c, b), start = list(c = 100, b = 10))
-  #lines(predict(fit, seq(1,50)), col="black")
-  #abline(v = -coef(fit)[["b"]] + sqrt(coef(fit)[["c"]]))
-  #print(d)
-  #print(-coef(fit)[["b"]] + sqrt(coef(fit)[["c"]]))
-}
-
-mtext("GPU temperature (ºC)", outer=TRUE, line=0, cex=1.3)
-```
-
