@@ -1,7 +1,0 @@
-tensorflow
-numpy
-pandas
-scikit-learn
-codecarbon
-scipy
-termcolor
