@@ -797,6 +797,118 @@ print(mean(abs(errors.sc)))
 print(mean(abs(errors.sc)/gt))
 ```
 
+## Energy savings
+
+```{r}
+predict_branch = function(values, coefs, offset, mode, energy_measure, energy_pred) {
+  preds = c()
+  for (j in 1:10) {
+    pred = sum(values * coefs) + offset
+    values = c(pred, values[1:3], mode, mode)
+    pred = pred / (energy_measure + j*energy_pred)
+    preds = c(preds, pred)
+  }
+  return (preds)
+}
+
+get_best_epoch = function(row, mode, energy_pred, coefs, offset, previous_score) {
+  mode = (mode == "freeze")
+  values = c(as.numeric(row[1:4]), row[5] == "freeze", mode)
+  energy_measure = row[[10]] - row[[9]]
+  score_pred = predict_branch(values, coefs, offset, mode, energy_measure, energy_pred)
+  
+  score_tot = c(previous_score, score_pred)
+  res = nls(score_tot ~ a / (b + 1:length(score_tot)), start = c(a=100, b=100), control = nls.control(minFactor = 1e-10, maxiter = 10000))
+  if (coef(res)["a"] < 0) {
+    res = nls(score_tot ~ a / (b + 1:length(score_tot)), start = c(a=1000, b=1000), control = nls.control(minFactor = 1e-10, maxiter = 10000))
+  }
+  epoch.opt = round(sqrt(coef(res)["a"]) - coef(res)["b"])
+  score.opt = coef(res)["a"] / (coef(res)["b"] + epoch.opt)
+  return (c("epoch" = epoch.opt, "score" = score.opt))
+}
+
+get_all_previous_value = function(epoch, mode, intervention, df) {
+  if (intervention == 0) {
+    return (df[df$intervention == 0 & df$mode == mode & df$epoch <= epoch,])
+  }
+  return(rbind(
+    df[df$intervention == 0 & df$epoch <= intervention,],
+    df[df$intervention == intervention & df$mode == mode & df$epoch <= epoch,]
+  ))
+}
+
+
+simulate = function(dataset) {
+  # Define data
+  part_data = panel.data2[panel.data$dataset != dataset, c(1:13, 20:23, 30)] %>% drop_na()
+  part_data[part_data == "quant"] = "base"
+  extra_data = panel.data2[panel.data$dataset == dataset & 
+    !(panel.data$intervention == 0 & panel.data$mode != "base"), c(1:13, 20:23, 30)]# %>% drop_na()
+  
+  # Pre compute for acc
+  res.fe = lm(val_accuracy ~ dataset + val_accuracy_lag1 + val_accuracy_lag2 + 
+                  val_accuracy_lag3 + val_accuracy_lag4 + mode_lag1 + mode, data=part_data)
+  coefs = res.fe$coefficients[12:17]
+  # Pre compute for energy
+  mode_means = part_data %>% 
+    group_by(dataset, mode) %>% 
+    summarise(mean_energy = mean(energy_nvidia)) %>%
+    pivot_wider(names_from = mode, values_from = mean_energy) %>%
+    as.data.frame()
+  change = lm(freeze~0+base, data=mode_means)$coefficients[[1]]
+  
+  current_mode = "base"
+  intervention = 0
+  for (i in 6:50) {
+    # Predict onward
+    previous_data = get_all_previous_value(i, current_mode, intervention, extra_data)[c(10:13,18,4,5,7:9,1:3)]
+    row = previous_data[i,]
+    previous_data = previous_data[1:(i-1),]
+    previous_score = previous_data$score
+    previous_data = drop_na(previous_data)
+    previous_data[5:6] = (previous_data[5:6] == "freeze")
+    
+    previous_preds = colSums(t(previous_data[1:6]) * coefs)
+    offset = mean(previous_data$val_accuracy) - mean(previous_preds)
+    energy_pred = mean(previous_data$energy_nvidia) * ifelse(current_mode == "base", 1, change)
+    optim = get_best_epoch(row, current_mode, energy_pred, coefs, offset, previous_score)
+    if (optim["epoch.a"] <= i) {
+      return (row)
+    }
+    if (current_mode == "base" & i %% 10 == 0) {
+      # Previously computed epoch.opt was for base, let's consider freezing
+      optim.freeze = get_best_epoch(row, "freeze", energy_pred * change, coefs, offset, previous_score)
+      if (optim.freeze["score.a"] > optim["score.a"]) {
+        if (optim["epoch.a"] <= i) {
+          return (row)
+        }
+        current_mode = "freeze"
+        intervention = i
+      }
+    }
+  }
+  return (row)
+}
+```
+
+```{r}
+results = data.frame()
+for (dataset in datasets$dataset) {
+  optim = simulate(dataset)
+  results = rbind(results, optim)
+}
+baseline = data.frame()
+for (dataset in datasets$dataset) {
+  final = all_data[all_data$dataset == dataset & all_data$mode == "base" & all_data$epoch == 50,]
+  baseline = rbind(baseline, final)
+}
+
+print(c(mean(results$energy_nvidia_cumulative), mean(baseline$energy_nvidia_cumulative)))
+print(mean(results$energy_nvidia_cumulative / baseline$energy_nvidia_cumulative))
+print(c(mean(results$val_accuracy), mean(baseline$val_accuracy)))
+print(mean(results$val_accuracy / baseline$val_accuracy))
+```
+
 ## Visualization
 
 ```{r}
