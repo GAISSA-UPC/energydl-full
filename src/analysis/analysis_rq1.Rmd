@@ -59,9 +59,10 @@ for (d in datasets$dataset) {
 
 ## Tests for accuracy (Section 4.1.1)
 
+### Test accuracy against TM
+
 ```{r}
 history.test = all_data[all_data$epoch == 50,]
-#history.test = all_data[all_data$epoch %in% c(10, 20, 30, 40, 50),]
 history.test["val_logodds_centered"] = center(history.test, "val_logodds")
 history.test["logodds_centered"] = center(history.test, "logodds")
 # These ones shouldn't be used, just for testing
@@ -69,8 +70,6 @@ history.test["energy_cumulative_centered"] = center(history.test, "energy_cumula
 history.test["energy_nvidia_cumulative_centered"] = center(history.test, "energy_nvidia_cumulative")
 history.test["duration_cumulative_centered"] = center(history.test, "duration_cumulative")
 ```
-
-### Test accuracy against TM
 
 ```{r}
 var.plot = "val_logodds_centered"
@@ -80,7 +79,7 @@ ggplot(history.test, aes(x=factor(intervention), y=!!sym(var.plot), fill=mode)) 
   geom_violin(scale="width", width=0.75, alpha=0.5, trim=FALSE) + 
   scale_fill_manual(values=c("blue", "green", "red"), name="Training mode", labels=c("Base training", "Layer freezing", "Model quantization")) +
   xlab("Epoch of intervention") +
-  ylab("Centered validation log odds") +
+  ylab("Accuracy (centered log odds)") +
   theme_minimal() +
   theme(legend.position = "top", 
         axis.text = element_text(size = 14), axis.title = element_text(size = 16),
@@ -107,12 +106,22 @@ print(pvals)
 ### Test accuracy against epoch of stopping
 
 ```{r}
+history.test = all_data
+history.test["val_logodds_centered"] = center(history.test, "val_logodds")
+history.test["logodds_centered"] = center(history.test, "logodds")
+# These ones shouldn't be used, just for testing
+history.test["energy_cumulative_centered"] = center(history.test, "energy_cumulative")
+history.test["energy_nvidia_cumulative_centered"] = center(history.test, "energy_nvidia_cumulative")
+history.test["duration_cumulative_centered"] = center(history.test, "duration_cumulative")
+```
+
+```{r}
 var.plot = "val_logodds_centered"
 ggplot(history.test, aes(x=factor(epoch), y=!!sym(var.plot))) +
   geom_boxplot(fill="blue") +
   #geom_violin(scale="width", width=0.75, alpha=0.5, trim=FALSE, fill="blue") +
   xlab("Epoch of stopping") +
-  ylab("Validation centered log odds") +
+  ylab("Accuracy (centered log odds)") +
   scale_x_discrete(breaks = unique(history.test$epoch)[c(rep(FALSE, 9), TRUE)]) +
   theme_minimal() +
   theme(legend.position = "top", 
@@ -152,9 +161,19 @@ ggplot(mapping = aes(x = 1:49, y = pvals)) +
   )
 ```
 
-## Tests for energy consumption (4.1.2)
+## Tests for energy consumption (Section 4.1.2)
 
 ### Test energy against TM
+
+```{r}
+history.test = all_data[all_data$epoch == 50,]
+history.test["val_logodds_centered"] = center(history.test, "val_logodds")
+history.test["logodds_centered"] = center(history.test, "logodds")
+# These ones shouldn't be used, just for testing
+history.test["energy_cumulative_centered"] = center(history.test, "energy_cumulative")
+history.test["energy_nvidia_cumulative_centered"] = center(history.test, "energy_nvidia_cumulative")
+history.test["duration_cumulative_centered"] = center(history.test, "duration_cumulative")
+```
 
 ```{r}
 var.plot = "energy_nvidia_centered_cumulative"
@@ -196,6 +215,16 @@ print(log(0.05/a) / b)
 ```
 
 ## Test energy against epoch of stopping
+
+```{r}
+history.test = all_data
+history.test["val_logodds_centered"] = center(history.test, "val_logodds")
+history.test["logodds_centered"] = center(history.test, "logodds")
+# These ones shouldn't be used, just for testing
+history.test["energy_cumulative_centered"] = center(history.test, "energy_cumulative")
+history.test["energy_nvidia_cumulative_centered"] = center(history.test, "energy_nvidia_cumulative")
+history.test["duration_cumulative_centered"] = center(history.test, "duration_cumulative")
+```
 
 ```{r}
 var.plot = "energy_nvidia_centered_cumulative"
