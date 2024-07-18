@@ -64,7 +64,7 @@ for (d in datasets$dataset) {
 }
 ```
 
-##Data prep 
+### Data prep 
 
 ```{r}
 panel.base = all_data %>%
@@ -119,9 +119,9 @@ for (attr in c("val_accuracy", "accuracy", "mode")) {
 }
 ```
 
-## Accuracy prediction
+## Accuracy prediction (Section 4.2.1)
 
-### Fit panel data (only base mode)
+### Fit panel data
 
 ```{r}
 ppanel.base = pdata.frame(panel.base, index=c("dataset", "epoch"))
@@ -151,7 +151,10 @@ print(phtest(res.fe2, res.re2)$p.value)
 ```
 
 
-### Check number of lagged values
+### Check number of accuracy lagged values
+
+T-tests
+
 ```{r}
 for (i in 1:10) {
   part_data = panel.data[,c(1:6, 7:(6+i), 17:(16+i), 27:(26+i))] %>% drop_na()
@@ -166,6 +169,7 @@ for (i in 1:10) {
 }
 ```
 
+ANOVA tests
 
 ```{r}
 for (i in 2:10) {
@@ -182,6 +186,8 @@ for (i in 2:10) {
 }
 ```
 
+### Check lagged values for TM
+
 ```{r}
 for (i in 1:4) {
   part_data = panel.data[,c(1:6, 7:10, 17:20, 27:30)] %>% drop_na()
@@ -195,55 +201,15 @@ for (i in 1:4) {
   coefs[,4] = i*coefs[,4]
   print(coefs)
 }
-
-for (i in 1:4) {
-  part_data = panel.data[,c(1:6, 7:10, 17:20, 27:30)] %>% drop_na()
-  part_data[part_data == "quant"] = "base"
-  form = formula(paste("val_accuracy ~ dataset +", 
-                       paste(paste0("val_accuracy_lag", 1:4), collapse="+"), "+",
-                       paste0("mode_lag", i), "+", "mode"))
-  res.fe = lm(form, data=part_data)
-  print(summary(res.fe))
-}
 ```
 
 ### Estimate dataset parameter
-```{r}
-n.rep = 1
-time.measure = system.time({
-  for (rep in 1:n.rep) {
-    errors.1 = c()
-    gt = c()
-    for (dataset in datasets$dataset) {
-      part_data = panel.data[panel.data$dataset != dataset, c(1:6, 7:10, 17:20, 27)] %>% drop_na()
-      part_data[part_data == "quant"] = "base"
-      extra_data = panel.data[panel.data$dataset == dataset, c(1:6, 7:10, 17:20, 27)] %>% drop_na()
-      extra_data[extra_data == "quant"] = "base"
-      for (i in 1:nrow(extra_data)) {
-        if (extra_data[i,"epoch"] <= 6) {next}
-        complete_data = rbind(part_data, get_all_previous(i, extra_data))
-        res.fe = lm(val_accuracy ~ dataset + val_accuracy_lag1 + val_accuracy_lag2 + 
-                      val_accuracy_lag3 + val_accuracy_lag4 + mode_lag1 + mode, data=complete_data)
-        pred = predict(res.fe, newdata=extra_data[i,c(1,7:10,15,4)])
-        errors.1 = c(errors.1, pred - extra_data[i,"val_accuracy"])
-        gt = c(gt, extra_data[i,"val_accuracy"])
-      }
-    }
-  }
-})
-print(time.measure[3]/n.rep)
-print(sum(errors.1**2))
-print(mean(errors.1**2))
-print(mean(abs(errors.1)))
-print(mean(abs(errors.1)/gt))
-```
-
 
 ```{r}
 n.rep = 1
 time.measure = system.time({
   for (rep in 1:n.rep) {
-    errors.2 = c()
+    errors = c()
     gt = c()
     for (dataset in datasets$dataset) {
       part_data = panel.data[panel.data$dataset != dataset, c(1:6, 7:10, 17:20, 27)] %>% drop_na()
@@ -265,7 +231,7 @@ time.measure = system.time({
         
         pred = c(as.numeric(extra_data[i,7:10]), extra_data[i,15]=="freeze", extra_data[i,4]=="freeze")
         pred = sum(pred * coefs) + offset
-        errors.2 = c(errors.2, pred - extra_data[i,"val_accuracy"])
+        errors = c(errors, pred - extra_data[i,"val_accuracy"])
         gt = c(gt, extra_data[i,"val_accuracy"])
         
       }
@@ -274,58 +240,10 @@ time.measure = system.time({
 })
 
 print(time.measure[3]/n.rep)
-print(sum(errors.2**2))
-print(mean(errors.2**2))
-print(mean(abs(errors.2)))
-print(mean(abs(errors.2)/gt))
-```
-
-
-```{r}
-n.rep = 1
-time.measure = system.time({
-  for (rep in 1:n.rep) {
-    errors.3 = c()
-    gt = c()
-    epochs.count = c()
-    for (dataset in datasets$dataset) {
-      part_data = panel.data[panel.data$dataset != dataset, c(1:6, 7:10, 17:20, 27)] %>% drop_na()
-      part_data[part_data == "quant"] = "base"
-      extra_data = panel.data[panel.data$dataset == dataset, c(1:6, 7:10, 17:20, 27)] %>% drop_na()
-      res.fe = lm(val_accuracy ~ dataset + val_accuracy_lag1 + val_accuracy_lag2 + 
-                      val_accuracy_lag3 + val_accuracy_lag4 + mode_lag1 + mode, data=part_data)
-      coefs = res.fe$coefficients[12:17]
-      n.count = 0
-      for (i in 1:nrow(extra_data)) {
-        if (extra_data[i,"epoch"] <= 6) {znext}
-        n.count = n.count + 1
-        previous_data = get_all_previous(i, extra_data)[c(7:10,15,4,5)]
-        previous_data[5:6] = (previous_data[5:6] == "freeze")
-        previous_preds = colSums(t(previous_data[1:6]) * coefs)
-        new_fit = lm(previous_data$val_accuracy ~ previous_preds)
-        
-        pred = c(as.numeric(extra_data[i,7:10]), extra_data[i,15]=="freeze", extra_data[i,4]=="freeze")
-        pred = sum(pred * coefs) * new_fit$coefficients[2] + new_fit$coefficients[1]
-        errors.3 = c(errors.3, pred - extra_data[i,"val_accuracy"])
-        epochs.count = c(epochs.count, extra_data[i,"epoch"])
-        gt = c(gt, extra_data[i,"val_accuracy"])
-      }
-    }
-  }
-})
-
-print(time.measure[3]/n.rep)
-print(sum(errors.3**2))
-print(mean(errors.3**2))
-print(mean(abs(errors.3)))
-print(mean(abs(errors.3)/gt))
-```
-
-```{r}
-plot(unique(epochs.count), tapply(errors.1, epochs.count, mean), type='l', col="blue")
-lines(unique(epochs.count), tapply(errors.2, epochs.count, mean), col="green")
-lines(unique(epochs.count), tapply(errors.3, epochs.count, mean), col="red")
-legend("topright", legend = c("Model refitting", "Additive parameter estimation", "Regressive parameter estimation"), col = c("blue", "green", "red"), lty = 1)
+print(sum(errors**2))
+print(mean(errors**2))
+print(mean(abs(errors)))
+print(mean(abs(errors)/gt))
 ```
 
 ### Estimation of coefficients for reference
@@ -339,16 +257,7 @@ print(names(res.fe$coefficients[13:length(res.fe$coefficients)]))
 print(unname(res.fe$coefficients[13:length(res.fe$coefficients)]))
 ```
 
-```{r}
-part_data = panel.data[c(1:6, 7:10, 17:20, 27)] %>% drop_na()
-res.fe = lm(accuracy ~ dataset + accuracy_lag1 + accuracy_lag2 + 
-                accuracy_lag3 + accuracy_lag4 + mode_lag1 + mode, data=part_data)
-print(summary(res.fe))
-print(names(res.fe$coefficients[13:length(res.fe$coefficients)]))
-print(unname(res.fe$coefficients[13:length(res.fe$coefficients)]))
-```
-
-## Energy prediction
+## Energy prediction (Section 4.2.2)
 
 ### Test for autocorrelation (temporal independence)
 
@@ -633,12 +542,14 @@ ggplot(mode_means, aes(x = base, y = quant, color = "quant")) +
   scale_y_log10()
 ```
 
+### Evaluation
+
 ```{r}
 n.rep = 1
 options(dplyr.summarise.inform = FALSE)
 time.measure = system.time({
   for (rep in 1:n.rep) {
-    errors.4 = c()
+    errors.2 = c()
     gt = c()
     for (dataset in datasets$dataset) {
       part_data = all_data[all_data$dataset != dataset,]
@@ -668,7 +579,7 @@ time.measure = system.time({
           pred = mean(previous_data$energy_nvidia[previous_data$mode == extra_data[i,"mode"]])
         }
         #preds = c(preds, pred)
-        errors.4 = c(errors.4, pred - extra_data[i,"energy_nvidia"])
+        errors.2 = c(errors.2, pred - extra_data[i,"energy_nvidia"])
         #data_pred = rbind(data_pred, extra_data[i,c("dataset", "mode", "epoch", "intervention")])
         gt = c(gt, extra_data[i,"energy_nvidia"])
       }
@@ -676,17 +587,17 @@ time.measure = system.time({
   }
 })
 #data_pred = data_pred[2:nrow(data_pred),]
-#data_pred["error"] = errors.4
+#data_pred["error"] = errors.2
 
 print(time.measure[3]/n.rep)
-print(sum(errors.4**2))
-print(mean(errors.4**2))
-print(mean(abs(errors.4)))
-print(mean(abs(errors.4)/gt))
+print(sum(errors.2**2))
+print(mean(errors.2**2))
+print(mean(abs(errors.2)))
+print(mean(abs(errors.2)/gt))
 ```
 
 ```{r}
-err = matrix((errors.4)/gt, ncol=12)
+err = matrix((errors.2)/gt, ncol=12)
 err2 = rowMeans(err)
 plot(err2)
 abline(h=0)
@@ -695,7 +606,7 @@ abline(v=185)
 abline(v=255)
 ```
 
-## Score prediction
+## Score prediction (Section 4.2.3)
 
 ```{r}
 panel.data2 = all_data[str_split("dataset,epoch,intervention,mode,val_accuracy,accuracy,score,energy_nvidia,energy_nvidia_cumulative", ",")[[1]]]
@@ -715,6 +626,8 @@ get_all_previous = function(i, df) {
   ))
 }
 ```
+
+### Prediction evaluation
 
 ```{r}
 n.rep = 1
@@ -797,7 +710,7 @@ print(mean(abs(errors.sc)))
 print(mean(abs(errors.sc)/gt))
 ```
 
-## Energy savings
+### Score maximization and energy savings
 
 ```{r}
 predict_branch = function(values, coefs, offset, mode, energy_measure, energy_pred) {
@@ -1005,7 +918,7 @@ par(mfrow=c(2, 2), mar=c(3,3,1,0), oma=c(0,0,0,0), mgp=c(1.6,0.5,0),
     cex.main=1.2, cex.lab=1.1, cex.axis=1)
 
 i = 0
-for (dataset in datasets_sample) {
+for (dataset in datasets$dataset) {
   intervention = ifelse(i < 2, 20, 30)
   
   gt = all_data[
