@@ -1,7 +1,10 @@
 # energydl-full
 
-This is the replication package to the publication "Energy-efficient Neural Network Training Through Runtime Layer
-Freezing, Model Quantization, and Early Stopping". To reproduce the study, do as follows:
+This is the replication package to the publication:
+> "Energy-efficient Neural Network Training Through Runtime Layer Freezing, Model Quantization, and Early Stopping."
+> by Álvaro Domingo Reguero, Silverio Martínez-Fernández, Roberto Verdechia.
+> Published in Computer Standards & Interfaces, 2024.
+To reproduce the study, do as follows:
 
 ## Install requirements
 
